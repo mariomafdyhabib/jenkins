@@ -1,4 +1,13 @@
-variable "aws_region" { type = string }
-variable "ami_id"     { type = string }
-variable "instance_type" { type = string, default = "t3.micro" }
-variable "key_name"   { type = string } # existing keypair name
+variable "aws_region" {
+  description = "The AWS region to deploy resources in"
+  type        = string
+  default     = "us-east-1"
+
+}
+
+variable "instance_type" {
+  description = "The type of instance to use for the EC2 instance"
+  type        = string
+  default     = "t2.micro"
+
+}
