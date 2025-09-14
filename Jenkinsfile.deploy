@@ -1,0 +1,77 @@
+pipeline {
+  agent { label 'docker' } // or an agent with docker CLI
+  parameters {
+    string(name: 'EC2_IP', defaultValue: '', description: 'IP of ephemeral EC2')
+  }
+  environment {
+    DOCKERHUB = credentials('DOCKERHUB') // provides DOCKERHUB_USR & DOCKERHUB_PSW if using username/password binding plugin
+    SSH_KEY_ID = 'SSH_KEY_ID'
+    IMAGE_NAMESPACE = 'your_dockerhub_namespace' // replace
+  }
+  stages {
+    stage('Checkout') {
+      steps { checkout scm }
+    }
+
+    stage('Prepare build context') {
+      steps {
+        script {
+          def ts = sh(script: "date -u +'%Y-%m-%dT%H:%M:%SZ'", returnStdout: true).trim()
+          sh """
+            mkdir -p build
+            echo "<html><body><h1>Build: ${env.BUILD_NUMBER}</h1><p>${ts}</p></body></html>" > build/index.html
+            cp Dockerfile build/
+          """
+        }
+      }
+    }
+
+    stage('Build Image') {
+      steps {
+        dir('build') {
+          sh "docker build -t ${IMAGE_NAMESPACE}/nginx-ci:${BUILD_NUMBER} ."
+        }
+      }
+    }
+
+    stage('Docker Login & Push') {
+      steps {
+        withCredentials([usernamePassword(credentialsId: 'DOCKERHUB', usernameVariable: 'DH_USER', passwordVariable: 'DH_PSW')]) {
+          sh '''
+            echo "$DH_PSW" | docker login -u "$DH_USER" --password-stdin
+            docker push ${IMAGE_NAMESPACE}/nginx-ci:${BUILD_NUMBER}
+            docker logout
+          '''
+        }
+      }
+    }
+
+    stage('SSH Deploy to EC2') {
+      steps {
+        // use ssh private key credential
+        withCredentials([sshUserPrivateKey(credentialsId: "${SSH_KEY_ID}", keyFileVariable: 'KEYFILE', usernameVariable: 'SSH_USER')]) {
+          script {
+            sh """
+              # stop and remove existing container if exists
+              ssh -i ${KEYFILE} -o StrictHostKeyChecking=no ${SSH_USER}@${params.EC2_IP} \\
+                'docker pull ${IMAGE_NAMESPACE}/nginx-ci:${BUILD_NUMBER} || exit 1; \\
+                 docker rm -f web || true; \\
+                 docker run -d --name web -p 80:80 --restart=always ${IMAGE_NAMESPACE}/nginx-ci:${BUILD_NUMBER}'
+            """
+            // verify
+            sh "sleep 3; ssh -i ${KEYFILE} -o StrictHostKeyChecking=no ${SSH_USER}@${params.EC2_IP} 'curl -sS http://127.0.0.1 | grep \"Build: ${BUILD_NUMBER}\"' || (echo 'Deploy verification failed' && exit 1)"
+          }
+        }
+      }
+    }
+  }
+
+  post {
+    success {
+      echo "Deploy succeeded to ${params.EC2_IP}"
+    }
+    failure {
+      echo "Deploy failed"
+    }
+  }
+}

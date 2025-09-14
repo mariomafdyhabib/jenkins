@@ -1,0 +1,49 @@
+TZ=Africa/Cairo
+0 0 * * *
+pipeline {
+  agent { label 'linux' }
+  environment {
+    AWS_CRED = credentials('AWS_CRED') // needs AWS access
+    AWS_REGION = 'us-east-2'
+  }
+  triggers { 
+    // leave empty, use job config "Build periodically" with TZ setting
+  }
+  stages {
+    stage('Find ephemeral instances') {
+      steps {
+        script {
+          // Use aws cli (ensure aws cli installed on agent) - credentials are in env via the credentials binding plugin or env vars
+          withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: 'AWS_CRED']]) {
+            sh """
+              # list instance ids with tag lifespan=ephemeral (states: pending,running,stopping,stopped)
+              INSTANCES=$(aws ec2 describe-instances --region ${AWS_REGION} --filters \\
+                "Name=tag:lifespan,Values=ephemeral" \\
+                "Name=instance-state-name,Values=pending,running,stopping,stopped" \\
+                --query 'Reservations[].Instances[].InstanceId' --output text)
+
+              echo "Found instances: $INSTANCES"
+
+              if [ -z "$INSTANCES" ]; then
+                echo "No ephemeral instances found"
+                exit 0
+              fi
+
+              # terminate all found
+              echo "Terminating: $INSTANCES"
+              aws ec2 terminate-instances --region ${AWS_REGION} --instance-ids $INSTANCES
+
+              # print final status
+              aws ec2 describe-instances --region ${AWS_REGION} --instance-ids $INSTANCES --query 'Reservations[].Instances[].{ID:InstanceId,State:State.Name,Tags:Tags}' --output json
+            """
+          }
+        }
+      }
+    }
+  }
+  post {
+    always {
+      echo "Cleanup run finished"
+    }
+  }
+}

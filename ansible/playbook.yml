@@ -1,0 +1,38 @@
+---
+- hosts: all
+  become: true
+  tasks:
+    - name: Update apt cache (Ubuntu)
+      ansible.builtin.apt:
+        update_cache: yes
+      when: ansible_os_family == "Debian"
+
+    - name: Install dependencies (yum)
+      ansible.builtin.yum:
+        name:
+          - yum-utils
+        state: present
+      when: ansible_os_family == "RedHat"
+
+    - name: Install Docker (Debian/Ubuntu)
+      ansible.builtin.apt:
+        name:
+          - apt-transport-https
+          - ca-certificates
+          - curl
+          - gnupg
+          - lsb-release
+        state: present
+      when: ansible_os_family == "Debian"
+
+    - name: Install Docker via convenience script (works cross-distro)
+      ansible.builtin.shell: |
+        curl -fsSL https://get.docker.com | sh
+      args:
+        warn: false
+
+    - name: Ensure docker service enabled and started
+      ansible.builtin.service:
+        name: docker
+        state: started
+        enabled: yes
