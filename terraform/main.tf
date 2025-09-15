@@ -27,7 +27,7 @@ data "aws_ami" "amazon_linux" {
   }
 }
 resource "aws_instance" "ci_ephemeral" {
-  ami                         = data.aws_ami.amazon_linux.id
+  ami                         = "ami-0b09ffb6d8b58ca91"
   instance_type               = var.instance_type
   associate_public_ip_address = true
   key_name                    = "Jenkins"
