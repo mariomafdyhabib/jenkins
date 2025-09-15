@@ -1,97 +1,112 @@
 pipeline {
-  agent { label 'linux' }
-  environment {
-    AWS_CRED = credentials('AWS_CRED') // use as env.AWS_ACCESS_KEY_ID etc. if plugin not present, pass via aws cli profile
-    SSH_KEY_ID = 'SSH_KEY_ID'          // credential id for later use
-  }
-  triggers {
-    // webhook configured in Git to trigger this pipeline on push to main
-  }
-  stages {
-    stage('Checkout') {
-      steps { checkout scm }
+    agent any
+
+    environment {
+        AWS_REGION = "us-east-1"
     }
 
-    stage('Terraform Init') {
-      steps {
-        dir('terraform') {
-          // ensure terraform CLI is available on agent
-          sh '''
-            terraform init -input=false
-          '''
+    stages {
+
+        stage('Checkout') {
+            steps {
+                checkout scm
+            }
         }
-      }
-    }
 
-    stage('Terraform Apply') {
-      steps {
-        dir('terraform') {
-          // Pass variables via env or var file
-          sh '''
-            terraform apply -auto-approve \
-              -var "aws_region=us-east-2" \
-              -var "ami_id=${AMI_ID}" \
-              -var "instance_type=t3.micro" \
-              -var "key_name=${TF_KEY_NAME}"
-          '''
+        stage('Terraform Init & Apply') {
+            steps {
+                // Optional manual confirmation before applying Terraform
+                input message: "Proceed with Terraform apply?"
+                
+                withCredentials([aws(
+                    credentialsId: 'aws-creds', 
+                    accessKeyVariable: 'AWS_ACCESS_KEY_ID', 
+                    secretKeyVariable: 'AWS_SECRET_ACCESS_KEY'
+                )]) {
+                    sh """
+                        cd terraform
+                        terraform init
+                        terraform apply -auto-approve
+                    """
+                }
+            }
         }
-      }
-    }
 
-    stage('Get public IP') {
-      steps {
-        dir('terraform') {
-          script {
-            def ip = sh(script: "terraform output -raw public_ip", returnStdout: true).trim()
-            echo "Provisioned instance IP: ${ip}"
-            // expose to downstream as build param via build step or use Jenkins parameterized trigger
-            // We'll trigger deploy pipeline and pass EC2_IP
-            env.EC2_IP = ip
-          }
+        stage('Wait for EC2 to be ready') {
+            steps {
+                withCredentials([aws(
+                    credentialsId: 'aws-creds', 
+                    accessKeyVariable: 'AWS_ACCESS_KEY_ID', 
+                    secretKeyVariable: 'AWS_SECRET_ACCESS_KEY'
+                )]) {
+                    script {
+                        def ec2_ip = sh(script: """
+                            aws ssm get-parameter \
+                              --name "/jenkins/ci_ephemeral_ip" \
+                              --region ${AWS_REGION} \
+                              --query "Parameter.Value" \
+                              --output text
+                        """, returnStdout: true).trim()
+
+                        env.EC2_IP = ec2_ip
+                        echo "EC2 IP: ${env.EC2_IP}"
+
+                        sh """
+                            echo "Waiting for SSH on ${env.EC2_IP}..."
+                            timeout=120
+                            while ! timeout 5 bash -c "</dev/tcp/${env.EC2_IP}/22"; do
+                                echo "Waiting for SSH..."
+                                sleep 5
+                                timeout=\$((timeout-5))
+                                if [ \$timeout -le 0 ]; then
+                                    echo "Timeout waiting for EC2 SSH"
+                                    exit 1
+                                fi
+                            done
+                            echo "EC2 is ready for Ansible"
+                        """
+                    }
+                }
+            }
         }
-      }
-    }
 
-    stage('Wait for SSH') {
-      steps {
-        script {
-          // wait for SSH up (simple loop)
-          sh '''
-            for i in $(seq 1 30); do
-              nc -z -w3 ${EC2_IP} 22 && exit 0 || sleep 5
-            done
-            echo "SSH did not open in time"; exit 1
-          '''
+        stage('Configure with Ansible') {
+            steps {
+                withCredentials([file(credentialsId: 'JENKINS_PEM', variable: 'JENKINS_PEM')]) {
+                    script {
+                        int retries = 5
+                        int wait_seconds = 10
+                        boolean success = false
+
+                        for (int i = 1; i <= retries; i++) {
+                            echo "Attempt ${i} to run Ansible playbook..."
+                            try {
+                                sh """
+                                  chmod 400 "\$JENKINS_PEM"
+                                  echo "Connecting to EC2 at ${env.EC2_IP}"
+
+                                  ANSIBLE_HOST_KEY_CHECKING=False ansible-playbook \
+                                    -i "${env.EC2_IP}," \
+                                    -u ec2-user \
+                                    --private-key "\$JENKINS_PEM" \
+                                    ansible/playbook.yml
+                                """
+                                success = true
+                                echo "Ansible playbook completed successfully!"
+                                break
+                            } catch (Exception e) {
+                                echo "Ansible playbook failed on attempt ${i}. Retrying in ${wait_seconds} seconds..."
+                                sleep(wait_seconds)
+                            }
+                        }
+
+                        if (!success) {
+                            error "Ansible playbook failed after ${retries} attempts."
+                        }
+                    }
+                }
+            }
         }
-      }
-    }
 
-    stage('Run Ansible to install Docker') {
-      steps {
-        // Use SSH private key credentials to run ansible
-        withCredentials([sshUserPrivateKey(credentialsId: "${SSH_KEY_ID}", keyFileVariable: 'KEYFILE', usernameVariable: 'SSH_USER')]) {
-          sh """
-            # create inventory
-            echo '${EC2_IP} ansible_user=${SSH_USER} ansible_ssh_private_key_file=${KEYFILE}' > inventory.cfg
-
-            # Run the playbook (assumes ansible installed on agent)
-            ansible-playbook -i inventory.cfg ../ansible/playbook.yml -u ${SSH_USER} --private-key ${KEYFILE} -o
-          """
-        }
-      }
-    }
-
-    stage('Trigger Deploy Pipeline') {
-      steps {
-        // Trigger Pipeline 2 and pass EC2_IP as a parameter
-        build job: 'deploy-job', parameters: [string(name: 'EC2_IP', value: env.EC2_IP)]
-      }
-    }
-  }
-
-  post {
-    failure {
-      echo "Provision pipeline failed"
-    }
-  }
-}
+    } // end stages
+} // end pipeline
