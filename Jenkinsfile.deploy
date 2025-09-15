@@ -11,7 +11,7 @@ pipeline {
             steps {
                 checkout scm
             }
-        }
+        } 
 
         stage('Wait for EC2 to be ready') {
             steps {
