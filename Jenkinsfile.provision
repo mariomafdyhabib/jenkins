@@ -4,9 +4,8 @@ pipeline {
     environment {
         AWS_REGION = "us-east-1"
     }
-
+ 
     stages {
-
         stage('Checkout') {
             steps {
                 checkout scm
@@ -15,18 +14,15 @@ pipeline {
 
         stage('Terraform Init & Apply') {
             steps {
-                // Optional manual confirmation before applying Terraform
-                input message: "Proceed with Terraform apply?"
-                
                 withCredentials([aws(
                     credentialsId: 'aws-creds', 
                     accessKeyVariable: 'AWS_ACCESS_KEY_ID', 
                     secretKeyVariable: 'AWS_SECRET_ACCESS_KEY'
                 )]) {
                     sh """
-                        cd terraform
-                        terraform init
-                        terraform apply -auto-approve
+                      cd terraform
+                      terraform init
+                      terraform apply -auto-approve
                     """
                 }
             }
@@ -52,18 +48,18 @@ pipeline {
                         echo "EC2 IP: ${env.EC2_IP}"
 
                         sh """
-                            echo "Waiting for SSH on ${env.EC2_IP}..."
-                            timeout=120
-                            while ! timeout 5 bash -c "</dev/tcp/${env.EC2_IP}/22"; do
-                                echo "Waiting for SSH..."
-                                sleep 5
-                                timeout=\$((timeout-5))
-                                if [ \$timeout -le 0 ]; then
-                                    echo "Timeout waiting for EC2 SSH"
-                                    exit 1
-                                fi
-                            done
-                            echo "EC2 is ready for Ansible"
+                          echo "Waiting for SSH on ${env.EC2_IP}..."
+                          timeout=120
+                          while ! timeout 5 bash -c "</dev/tcp/${env.EC2_IP}/22"; do
+                              echo "Waiting for SSH..."
+                              sleep 5
+                              timeout=\$((timeout-5))
+                              if [ \$timeout -le 0 ]; then
+                                  echo "Timeout waiting for EC2 SSH"
+                                  exit 1
+                              fi
+                          done
+                          echo "EC2 is ready for Ansible"
                         """
                     }
                 }
@@ -71,42 +67,41 @@ pipeline {
         }
 
         stage('Configure with Ansible') {
-            steps {
-                withCredentials([file(credentialsId: 'JENKINS_PEM', variable: 'JENKINS_PEM')]) {
-                    script {
-                        int retries = 5
-                        int wait_seconds = 10
-                        boolean success = false
+    steps {
+        withCredentials([file(credentialsId: 'JENKINS_PEM', variable: 'JENKINS_PEM')]) {
+            script {
+                int retries = 5
+                int wait_seconds = 10
+                boolean success = false
 
-                        for (int i = 1; i <= retries; i++) {
-                            echo "Attempt ${i} to run Ansible playbook..."
-                            try {
-                                sh """
-                                  chmod 400 "\$JENKINS_PEM"
-                                  echo "Connecting to EC2 at ${env.EC2_IP}"
+                for (int i = 1; i <= retries; i++) {
+                    echo "Attempt ${i} to run Ansible playbook..."
+                    try {
+                        sh """
+                          chmod 400 "\$JENKINS_PEM"
+                          echo "Connecting to EC2 at ${env.EC2_IP}"
 
-                                  ANSIBLE_HOST_KEY_CHECKING=False ansible-playbook \
-                                    -i "${env.EC2_IP}," \
-                                    -u ec2-user \
-                                    --private-key "\$JENKINS_PEM" \
-                                    ansible/playbook.yml
-                                """
-                                success = true
-                                echo "Ansible playbook completed successfully!"
-                                break
-                            } catch (Exception e) {
-                                echo "Ansible playbook failed on attempt ${i}. Retrying in ${wait_seconds} seconds..."
-                                sleep(wait_seconds)
-                            }
-                        }
-
-                        if (!success) {
-                            error "Ansible playbook failed after ${retries} attempts."
-                        }
+                          ANSIBLE_HOST_KEY_CHECKING=False ansible-playbook \
+                            -i "${env.EC2_IP}," \
+                            -u ec2-user \
+                            --private-key "\$JENKINS_PEM" \
+                            ansible/playbook.yml
+                        """
+                        success = true
+                        echo "Ansible playbook completed successfully!"
+                        break
+                    } catch (Exception e) {
+                        echo "Ansible playbook failed on attempt ${i}. Retrying in ${wait_seconds} seconds..."
+                        sleep(wait_seconds)
                     }
+                }
+
+                if (!success) {
+                    error "Ansible playbook failed after ${retries} attempts."
                 }
             }
         }
-
-    } // end stages
-} // end pipeline
+    }
+}
+    }
+}
