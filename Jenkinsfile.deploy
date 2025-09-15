@@ -3,7 +3,7 @@ pipeline {
 
     environment {
         AWS_REGION = "us-east-1"
-        IMAGE_NAME = "tarekadel/nginx-ci"
+        IMAGE_NAME = "mariomafdy/my-repo"
     }
 
     stages {
