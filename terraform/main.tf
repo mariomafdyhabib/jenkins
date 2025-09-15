@@ -31,7 +31,7 @@ resource "aws_instance" "ci_ephemeral" {
   instance_type               = var.instance_type
   associate_public_ip_address = true
   key_name                    = "Jenkins"
-  subnet_id                   = "subnet-0474b78b9419670f8"
+  subnet_id     = aws_subnet.ci_subnet.id
   tags = {
     Name     = "ci-ephemeral"
     lifespan = "ephemeral"
